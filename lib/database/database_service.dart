@@ -9,28 +9,29 @@ Future<List<Map<String, dynamic>>> fetchAllUserProfiles() async {
       .collection('users')
       .get();
 
-  return querySnapshot.docs
-      .where((doc) => doc.id != currentUser.uid) // 👈 Exclude current user
-      .map((doc) {
-        final data = doc.data();
-        final info = data['personalInfo'] ?? {};
-        final appearance = data['appearance'] ?? {};
-        final education = data['education'] ?? {};
-        return {
-          'name':
-              "${info['firstName'] ?? ''} ${info['middleName'] ?? ''} ${info['lastName'] ?? ''}"
-                  .trim(),
-          'age': info['age'] ?? 0,
-          'city': info['cityAndCountry'] ?? 'Unknown',
-          'description': info['description'] ?? '',
-          'image':
-              "assets/images/WhatsApp Image 2025-01-17 at 23.29.04_731460b3.jpg", // Placeholder
-          'height': appearance['Height (ft)'] ?? 'Unknown',
-          'educationLevel': education['educationLevel'] ?? 'Not specified',
-          'occupation': education['occupation'] ?? 'Not specified',
-          'languages':
-              (education['languagesToLearn'] as List?)?.join(', ') ?? 'None',
-        };
-      })
-      .toList();
+  return querySnapshot.docs.where((doc) => doc.id != currentUser.uid).map((
+    doc,
+  ) {
+    final data = doc.data();
+    final info = data['personalInfo'] ?? {};
+    final appearance = data['appearance'] ?? {};
+    final education = data['education'] ?? {};
+
+    return {
+      'uid': doc.id,
+      'name':
+          "${info['firstName'] ?? ''} ${info['middleName'] ?? ''} ${info['lastName'] ?? ''}"
+              .trim(),
+      'age': info['age'] ?? 0,
+      'city': info['cityAndCountry'] ?? 'Unknown',
+      'description': info['description'] ?? '',
+      'image':
+          "assets/images/WhatsApp Image 2025-01-17 at 23.29.04_731460b3.jpg", // Placeholder
+      'height': appearance['Height (ft)'] ?? 'Unknown',
+      'educationLevel': education['educationLevel'] ?? 'Not specified',
+      'occupation': education['occupation'] ?? 'Not specified',
+      'languages':
+          (education['languagesToLearn'] as List?)?.join(', ') ?? 'None',
+    };
+  }).toList();
 }

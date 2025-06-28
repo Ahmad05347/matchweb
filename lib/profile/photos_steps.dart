@@ -1,9 +1,11 @@
 import 'dart:io';
-import 'package:flutter/material.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:image_picker/image_picker.dart';
+import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cached_network_image/cached_network_image.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:uuid/uuid.dart';
 
 class PhotosStep extends StatefulWidget {
@@ -15,78 +17,84 @@ class PhotosStep extends StatefulWidget {
 
 class _PhotosStepState extends State<PhotosStep> {
   final ImagePicker _picker = ImagePicker();
-  final List<String> _uploadedImageUrls = [];
-  final List<File> _localImages = [];
+  final List<dynamic> _selectedImages = []; // Store File or Uint8List
   bool _uploading = false;
 
   Future<void> _pickImage() async {
-    if (_uploadedImageUrls.length >= 5) return;
+    if (_selectedImages.length >= 5) return;
 
     final picked = await _picker.pickImage(
       source: ImageSource.gallery,
-      imageQuality: 90,
+      imageQuality: 85,
     );
+
     if (picked != null) {
-      final file = File(picked.path);
-      setState(() => _localImages.add(file));
-      await _uploadToFirebase(file);
+      if (kIsWeb) {
+        final Uint8List bytes = await picked.readAsBytes();
+        setState(() => _selectedImages.add(bytes));
+      } else {
+        final File file = File(picked.path);
+        setState(() => _selectedImages.add(file));
+      }
     }
   }
 
-  Future<void> _uploadToFirebase(File image) async {
+  Future<void> _uploadImagesToFirebase() async {
+    if (_selectedImages.isEmpty) return;
+
     setState(() => _uploading = true);
+
     try {
-      final fileName = const Uuid().v4();
-      final ref = FirebaseStorage.instance.ref().child(
-        'profile_photos/$fileName.jpg',
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      final userId = user.uid;
+      final List<String> downloadUrls = [];
+
+      for (int i = 0; i < _selectedImages.length; i++) {
+        final image = _selectedImages[i];
+        final ref = FirebaseStorage.instance.ref(
+          'profile_photos/${userId}_${const Uuid().v4()}.jpg',
+        );
+
+        UploadTask uploadTask;
+
+        if (kIsWeb && image is Uint8List) {
+          uploadTask = ref.putData(
+            image,
+            SettableMetadata(contentType: 'image/jpeg'),
+          );
+        } else if (image is File) {
+          uploadTask = ref.putFile(image);
+        } else {
+          continue; // Skip invalid entry
+        }
+
+        final snapshot = await uploadTask;
+        final url = await snapshot.ref.getDownloadURL();
+        downloadUrls.add(url);
+      }
+
+      /// Save photo URLs to Firestore (under `photoUrls`)
+      await FirebaseFirestore.instance.collection('users').doc(userId).set({
+        'photoUrls': downloadUrls,
+      }, SetOptions(merge: true));
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Photos uploaded successfully!')),
       );
-      await ref.putFile(image);
-      final url = await ref.getDownloadURL();
-
-      setState(() {
-        _uploadedImageUrls.add(url);
-      });
-
-      // Store in Firestore (optional - replace 'userId' with actual user ID)
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc('userId')
-          .collection('photos')
-          .add({'url': url});
     } catch (e) {
-      debugPrint('Upload error: $e');
+      debugPrint('Image upload error: $e');
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Failed to upload photos.')));
     } finally {
       setState(() => _uploading = false);
     }
   }
 
-  Future<void> _removeImage(int index) async {
-    final imageUrl = _uploadedImageUrls[index];
-
-    try {
-      // Delete from Firebase Storage
-      final ref = FirebaseStorage.instance.refFromURL(imageUrl);
-      await ref.delete();
-
-      // Optionally delete from Firestore
-      final photosCollection = FirebaseFirestore.instance
-          .collection('users')
-          .doc('userId')
-          .collection('photos');
-      final snapshot = await photosCollection
-          .where('url', isEqualTo: imageUrl)
-          .get();
-      for (var doc in snapshot.docs) {
-        await doc.reference.delete();
-      }
-
-      setState(() {
-        _uploadedImageUrls.removeAt(index);
-        _localImages.removeAt(index);
-      });
-    } catch (e) {
-      debugPrint('Deletion error: $e');
-    }
+  void _removeImage(int index) {
+    setState(() => _selectedImages.removeAt(index));
   }
 
   @override
@@ -133,78 +141,79 @@ class _PhotosStepState extends State<PhotosStep> {
               ),
               const SizedBox(height: 25),
 
+              /// Image Grid Slots
               Wrap(
                 spacing: 15,
                 runSpacing: 15,
                 children: List.generate(5, (index) {
-                  final isFilled = index < _uploadedImageUrls.length;
+                  final isFilled = index < _selectedImages.length;
 
-                  return GestureDetector(
-                    onTap: !isFilled && !_uploading ? _pickImage : null,
-                    child: Container(
-                      width: 90,
-                      height: 90,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(16),
-                        color: isFilled
-                            ? Colors.transparent
-                            : Colors.grey.shade200,
-                        image: isFilled
-                            ? DecorationImage(
-                                image: CachedNetworkImageProvider(
-                                  _uploadedImageUrls[index],
-                                ),
-                                fit: BoxFit.cover,
-                              )
-                            : null,
-                        boxShadow: isFilled
-                            ? [
-                                BoxShadow(
-                                  color: Colors.black26,
-                                  blurRadius: 10,
-                                  offset: const Offset(2, 4),
-                                ),
-                              ]
-                            : [],
-                      ),
-                      child: isFilled
-                          ? Stack(
-                              children: [
-                                Positioned(
-                                  top: 4,
-                                  right: 4,
-                                  child: GestureDetector(
-                                    onTap: () => _removeImage(index),
-                                    child: Container(
-                                      decoration: const BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        color: Colors.black54,
-                                      ),
-                                      padding: const EdgeInsets.all(4),
-                                      child: const Icon(
-                                        Icons.close,
-                                        size: 18,
-                                        color: Colors.white,
-                                      ),
+                  return Container(
+                    width: 120,
+                    height: 120,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(16),
+                      color: Colors.grey.shade200,
+                      boxShadow: isFilled
+                          ? [
+                              BoxShadow(
+                                color: Colors.black26,
+                                blurRadius: 10,
+                                offset: const Offset(2, 4),
+                              ),
+                            ]
+                          : [],
+                      image: isFilled
+                          ? DecorationImage(
+                              image: _selectedImages[index] is Uint8List
+                                  ? MemoryImage(_selectedImages[index])
+                                  : FileImage(_selectedImages[index])
+                                        as ImageProvider,
+                              fit: BoxFit.cover,
+                              filterQuality: FilterQuality.high,
+                            )
+                          : null,
+                    ),
+                    child: isFilled
+                        ? Stack(
+                            children: [
+                              Positioned(
+                                top: 4,
+                                right: 4,
+                                child: GestureDetector(
+                                  onTap: () => _removeImage(index),
+                                  child: Container(
+                                    decoration: const BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: Colors.black54,
+                                    ),
+                                    padding: const EdgeInsets.all(4),
+                                    child: const Icon(
+                                      Icons.close,
+                                      size: 18,
+                                      color: Colors.white,
                                     ),
                                   ),
                                 ),
-                              ],
-                            )
-                          : Center(
+                              ),
+                            ],
+                          )
+                        : Center(
+                            child: GestureDetector(
+                              onTap: _uploading ? null : _pickImage,
                               child: Icon(
                                 Icons.add_a_photo_outlined,
                                 color: Colors.grey.shade600,
                               ),
                             ),
-                    ),
+                          ),
                   );
                 }),
               ),
 
               const SizedBox(height: 30),
 
-              if (_uploadedImageUrls.length < 5 && !_uploading)
+              if (_selectedImages.length < 5 && !_uploading)
                 ElevatedButton.icon(
                   onPressed: _pickImage,
                   icon: const Icon(Icons.add_photo_alternate_outlined),
@@ -222,6 +231,29 @@ class _PhotosStepState extends State<PhotosStep> {
                     elevation: 6,
                   ),
                 ),
+
+              const SizedBox(height: 10),
+
+              if (_selectedImages.isNotEmpty && !_uploading)
+                ElevatedButton.icon(
+                  onPressed: _uploadImagesToFirebase,
+
+                  icon: const Icon(Icons.cloud_upload_outlined),
+                  label: const Text('Upload to Firebase'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green.shade700,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 25,
+                      vertical: 14,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    elevation: 6,
+                  ),
+                ),
+
               if (_uploading)
                 const Padding(
                   padding: EdgeInsets.only(top: 20),

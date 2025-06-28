@@ -1,5 +1,6 @@
 import 'dart:ui';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:match_web_app/comp/filter_dialog_content.dart';
@@ -34,7 +35,7 @@ class _DashboardState extends State<Dashboard> {
     final currentUserId = FirebaseAuth.instance.currentUser?.uid;
     final fetchedProfiles = await fetchAllUserProfiles();
     final profiles = fetchedProfiles
-        .where((p) => p['id'] != currentUserId)
+        .where((p) => p['uid'] != currentUserId)
         .toList();
     setState(() {
       allProfiles = profiles;
@@ -43,8 +44,48 @@ class _DashboardState extends State<Dashboard> {
     });
   }
 
-  void _handleAction(int index, String actionType) {
-    setState(() => filteredProfiles.removeAt(index));
+  Future<void> _handleAction(int index, String action) async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) return;
+
+    final currentUserId = currentUser.uid;
+    final matchedUser = filteredProfiles[index];
+    final matchedUserId = matchedUser['uid'];
+
+    // ❗ Validate user2Id (matchedUserId)
+    if (matchedUserId == null || matchedUserId.toString().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Error: Cannot perform action. Invalid user ID."),
+        ),
+      );
+      return;
+    }
+
+    final matchId = '${currentUserId}_$matchedUserId';
+
+    try {
+      await FirebaseFirestore.instance.collection('matches').doc(matchId).set({
+        'user1Id': currentUserId,
+        'user2Id': matchedUserId,
+        'status': action == 'accept' ? 'Pending' : 'Rejected',
+        'timestamp': FieldValue.serverTimestamp(),
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            action == 'accept'
+                ? 'Accepted ${matchedUser['name']}!'
+                : 'Rejected ${matchedUser['name']}',
+          ),
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error saving match: ${e.toString()}")),
+      );
+    }
   }
 
   void _filterProfiles() {
